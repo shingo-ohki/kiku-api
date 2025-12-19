@@ -35,6 +35,14 @@ const longTermLimiter = rateLimit({
 app.use(cors())
 app.use(express.json())
 
+// JST タイムスタンプ生成
+function getJSTTimestamp() {
+  const now = new Date()
+  const jstOffset = 9 * 60 // JST は UTC+9
+  const jstTime = new Date(now.getTime() + jstOffset * 60 * 1000)
+  return jstTime.toISOString().replace('Z', '+09:00')
+}
+
 // システムプロンプト（共通）
 const SYSTEM_PROMPT = `あなたは KIKU（きく）です。
 
@@ -241,11 +249,23 @@ app.get('/health', (req, res) => {
 
 // 問い生成 API（レート制限適用）
 app.post('/api/generate', shortTermLimiter, longTermLimiter, async (req, res) => {
+  const startTime = Date.now()
+  const requestId = `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+  
   try {
     const body = req.body
+    const clientIp = req.headers['x-forwarded-for']?.split(',')[0] || req.ip
+    const maskedIp = clientIp.replace(/\.\d+$/, '.xxx') // 最後のオクテットをマスク
 
     // 入力検証
     if (!body.theme?.trim() || !body.background?.trim()) {
+      console.log(JSON.stringify({
+        timestamp: getJSTTimestamp(),
+        requestId,
+        type: 'validation_error',
+        ip: maskedIp,
+        error: 'theme または background が未入力'
+      }))
       return res.status(400).json({ error: "theme と background は必須です" })
     }
 
@@ -253,6 +273,20 @@ app.post('/api/generate', shortTermLimiter, longTermLimiter, async (req, res) =>
     const mode = (body.unheard_contexts && body.unheard_contexts.length > 0)
       ? "lowered_entry"
       : "default"
+
+    // リクエストログ
+    console.log(JSON.stringify({
+      timestamp: getJSTTimestamp(),
+      requestId,
+      type: 'request',
+      ip: maskedIp,
+      input: {
+        theme: body.theme,
+        background: body.background,
+        unheard_contexts: body.unheard_contexts || [],
+      },
+      mode,
+    }))
 
     // ユーザープロンプト作成
     const userPrompt = buildUserPrompt(body, mode)
@@ -284,9 +318,41 @@ app.post('/api/generate', shortTermLimiter, longTermLimiter, async (req, res) =>
       structure,
     }
 
+    // 成功ログ
+    const duration = Date.now() - startTime
+    console.log(JSON.stringify({
+      timestamp: getJSTTimestamp(),
+      requestId,
+      type: 'success',
+      ip: maskedIp,
+      mode,
+      output: {
+        explanation: structure.explanation,
+        questionCount: structure.questions.length,
+      },
+      duration,
+      openai: {
+        model: 'gpt-4o-mini',
+        tokens: response.usage?.total_tokens || 0,
+      }
+    }))
+
     res.json(result)
   } catch (error) {
-    console.error("Error in generate API:", error)
+    const duration = Date.now() - startTime
+    const clientIp = req.headers['x-forwarded-for']?.split(',')[0] || req.ip
+    const maskedIp = clientIp.replace(/\.\d+$/, '.xxx')
+    
+    // エラーログ
+    console.error(JSON.stringify({
+      timestamp: getJSTTimestamp(),
+      requestId,
+      type: 'error',
+      ip: maskedIp,
+      error: error.message,
+      stack: error.stack,
+      duration,
+    }))
 
     if (error instanceof SyntaxError) {
       return res.status(500).json({ error: "生成結果の解析に失敗しました" })
