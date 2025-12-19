@@ -2,6 +2,7 @@ require('dotenv').config()
 const express = require('express')
 const cors = require('cors')
 const { OpenAI } = require('openai')
+const rateLimit = require('express-rate-limit')
 
 const app = express()
 const PORT = process.env.PORT || 3001
@@ -9,6 +10,25 @@ const PORT = process.env.PORT || 3001
 // OpenAI クライアント
 const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
+})
+
+// レート制限設定
+// 短期制限: bot 対策（1分間に5回まで）
+const shortTermLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000, // 1分
+  max: parseInt(process.env.RATE_LIMIT_SHORT_MAX || '5'),
+  message: { error: '短時間に多くのリクエストが送信されました。少し時間をおいてから再度お試しください。' },
+  standardHeaders: true,
+  legacyHeaders: false,
+})
+
+// 長期制限: コスト保護（1時間に50回まで）
+const longTermLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1時間
+  max: parseInt(process.env.RATE_LIMIT_LONG_MAX || '50'),
+  message: { error: '1時間あたりの利用上限に達しました。しばらく時間をおいてから再度お試しください。' },
+  standardHeaders: true,
+  legacyHeaders: false,
 })
 
 // ミドルウェア
@@ -219,8 +239,8 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok' })
 })
 
-// 問い生成 API
-app.post('/api/generate', async (req, res) => {
+// 問い生成 API（レート制限適用）
+app.post('/api/generate', shortTermLimiter, longTermLimiter, async (req, res) => {
   try {
     const body = req.body
 
