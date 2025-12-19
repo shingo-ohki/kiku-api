@@ -7,6 +7,10 @@ const rateLimit = require('express-rate-limit')
 const app = express()
 const PORT = process.env.PORT || 3001
 
+// Railway/Proxy 経由のクライアントIPを取得するため
+// X-Forwarded-For を信頼（express-rate-limit の警告対策）
+app.set('trust proxy', 1)
+
 // OpenAI クライアント
 const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
