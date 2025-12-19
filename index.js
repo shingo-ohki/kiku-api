@@ -1,0 +1,281 @@
+require('dotenv').config()
+const express = require('express')
+const cors = require('cors')
+const { OpenAI } = require('openai')
+
+const app = express()
+const PORT = process.env.PORT || 3001
+
+// OpenAI クライアント
+const client = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+})
+
+// ミドルウェア
+app.use(cors())
+app.use(express.json())
+
+// システムプロンプト（共通）
+const SYSTEM_PROMPT = `あなたは KIKU（きく）です。
+
+KIKUは、
+意見が生まれる前の段階で、
+「どう聞けばいいか分からない人」と一緒に
+問いの下書きを考えるためのアシスタントです。
+
+【してはいけないこと】
+- 意見を評価しない
+- 回答を判断しない
+- 正解・最適解・結論を示さない
+- 政策・施策・改善案を提案しない
+- 回答者に責任や義務を負わせない
+
+【すること】
+- 参加の心理的ハードルを下げる
+- 日常の経験や感じ方を思い出してもらう
+- 中立で安全な問いの「下書き」を提示する
+- 「書かなくてもよい」「答えなくてもよい」余白を残す
+
+出力する問いは、すべて「下書き」である。
+完成形や権威あるものとして提示してはならない。`
+
+// default モードのプロンプト
+const DEFAULT_PROMPT = `【前提】
+ユーザーは、何かについて声を聞きたいと思っているが、
+どこから、どう聞けばよいか分からない状態である。
+
+【タスク】
+参加しやすく、心理的に安全な
+問いの下書きを作成する。
+
+【問いの姿勢】
+- 利用経験や接触経験から聞き始める
+- 評価・判断・要望を求めない
+- 回答者について何も仮定しない
+- 中立で落ち着いた語調を保つ
+
+【構成】
+1. 問いの構成についての短い説明
+2. 問い①：経験や利用状況を思い出す問い（選択式）
+3. 問い②：印象や感じ方を選びやすく聞く問い（選択式）
+4. 問い③：書けたら書ける問い（自由記述・任意）
+
+【言葉づかい】
+- 命令形を使わない
+- 「〜すべき」を使わない
+- 評価語を使わない
+- 自由記述は必ず任意と明示する
+
+【出力形式】
+以下のJSON形式で出力してください：
+{
+  "explanation": "問いの構成についての短い説明",
+  "questions": [
+    {
+      "number": 1,
+      "title": "問い①のタイトル",
+      "text": "問い①の本文",
+      "type": "choice",
+      "options": ["選択肢1", "選択肢2", "選択肢3"]
+    },
+    {
+      "number": 2,
+      "title": "問い②のタイトル",
+      "text": "問い②の本文",
+      "type": "choice",
+      "options": ["選択肢1", "選択肢2", "選択肢3"]
+    },
+    {
+      "number": 3,
+      "title": "問い③のタイトル（任意）",
+      "text": "問い③の本文\\n（書かなくても大丈夫です）",
+      "type": "text"
+    }
+  ],
+  "note": "※ この問いは、意見を評価するためのものではありません。\\n日常の感じ方を知るための下書きです。"
+}`
+
+// lowered_entry モードのプロンプト
+const LOWERED_ENTRY_PROMPT = `【前提】
+これまであまり声が届いていなかった人や、
+テーマとの接点が薄い人も想定する。
+
+参加していないこと、関心が薄いこと、
+忙しくて関われていないことは、
+すべて自然な状態として扱う。
+
+【タスク】
+問いの入口をさらに下げた、
+より参加しやすい問いの下書きを作成する。
+
+【問いの姿勢】
+- 利用や参加を前提にしない
+- 生活文脈や距離感から聞き始める
+- 関わっていないことを否定しない
+- 心理的負荷を最小限にする
+
+【構成】
+1. 問いの構成についての短い説明
+2. 問い①：日常の気づきや認識を聞く問い（選択式）
+3. 問い②：距離感を表現しやすい問い（選択式）
+4. 問い③：きっかけや条件を聞く問い（自由記述・任意）
+
+【言葉づかい】
+- 義務・責任・理由追及を感じさせない
+- 「なぜ参加しないのか」と聞かない
+- 日常的でやわらかい表現を使う
+
+【出力形式】
+以下のJSON形式で出力してください：
+{
+  "explanation": "問いの構成についての短い説明",
+  "questions": [
+    {
+      "number": 1,
+      "title": "問い①のタイトル",
+      "text": "問い①の本文",
+      "type": "choice",
+      "options": ["選択肢1", "選択肢2", "選択肢3"]
+    },
+    {
+      "number": 2,
+      "title": "問い②のタイトル",
+      "text": "問い②の本文",
+      "type": "choice",
+      "options": ["選択肢1", "選択肢2", "選択肢3"]
+    },
+    {
+      "number": 3,
+      "title": "問い③のタイトル（任意）",
+      "text": "問い③の本文\\n（書かなくても大丈夫です）",
+      "type": "text"
+    }
+  ],
+  "note": "※ この問いは、意見を評価するためのものではありません。\\n日常の感じ方を知るための下書きです。"
+}`
+
+// ユーザープロンプトの作成
+function buildUserPrompt(req, mode) {
+  const modePrompt = mode === "default" ? DEFAULT_PROMPT : LOWERED_ENTRY_PROMPT
+
+  const contextInfo = req.unheard_contexts && req.unheard_contexts.length > 0
+    ? `\n\n声が届いていないと感じられる人たち：\n${req.unheard_contexts.map(c => `- ${c}`).join("\n")}`
+    : ""
+
+  return `${modePrompt}
+
+ユーザーの状況：
+テーマ：${req.theme}
+背景：${req.background}${contextInfo}
+
+上記の状況に基づいて、問いの下書きを生成してください。`
+}
+
+// JSON の検証と型変換
+function parseGeneratedStructure(content) {
+  // JSON ブロックを抽出
+  const jsonMatch = content.match(/\{[\s\S]*\}/)
+  if (!jsonMatch) {
+    throw new Error("JSON が見つかりません")
+  }
+
+  const parsed = JSON.parse(jsonMatch[0])
+
+  // 型の検証と変換
+  if (!parsed.explanation || !Array.isArray(parsed.questions) || !parsed.note) {
+    throw new Error("必須フィールドが不足しています")
+  }
+
+  // questions の型チェック
+  const questions = parsed.questions.map((q) => {
+    if (!q.number || !q.title || !q.text || !q.type) {
+      throw new Error("問いの必須フィールドが不足しています")
+    }
+
+    if (q.type === "choice") {
+      if (!Array.isArray(q.options) || q.options.length === 0) {
+        throw new Error("choice 型には options が必要です")
+      }
+    }
+
+    return {
+      number: q.number,
+      title: q.title,
+      text: q.text,
+      type: q.type,
+      options: q.options,
+    }
+  })
+
+  return {
+    explanation: parsed.explanation,
+    questions,
+    note: parsed.note,
+  }
+}
+
+// ヘルスチェック
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok' })
+})
+
+// 問い生成 API
+app.post('/api/generate', async (req, res) => {
+  try {
+    const body = req.body
+
+    // 入力検証
+    if (!body.theme?.trim() || !body.background?.trim()) {
+      return res.status(400).json({ error: "theme と background は必須です" })
+    }
+
+    // mode 判定
+    const mode = (body.unheard_contexts && body.unheard_contexts.length > 0)
+      ? "lowered_entry"
+      : "default"
+
+    // ユーザープロンプト作成
+    const userPrompt = buildUserPrompt(body, mode)
+
+    // OpenAI API 呼び出し
+    const response = await client.chat.completions.create({
+      model: "gpt-4o-mini",
+      max_tokens: 2000,
+      messages: [
+        {
+          role: "system",
+          content: SYSTEM_PROMPT,
+        },
+        {
+          role: "user",
+          content: userPrompt,
+        },
+      ],
+    })
+
+    // 応答の抽出
+    const content = response.choices[0].message.content || ""
+
+    // JSON の解析
+    const structure = parseGeneratedStructure(content)
+
+    const result = {
+      mode,
+      structure,
+    }
+
+    res.json(result)
+  } catch (error) {
+    console.error("Error in generate API:", error)
+
+    if (error instanceof SyntaxError) {
+      return res.status(500).json({ error: "生成結果の解析に失敗しました" })
+    }
+
+    res.status(500).json({ error: "問いの生成に失敗しました" })
+  }
+})
+
+app.listen(PORT, () => {
+  console.log(`KIKU API server running on port ${PORT}`)
+})
