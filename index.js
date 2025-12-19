@@ -330,10 +330,7 @@ app.post('/api/generate', shortTermLimiter, longTermLimiter, async (req, res) =>
       type: 'success',
       ip: maskedIp,
       mode,
-      output: {
-        explanation: structure.explanation,
-        questionCount: structure.questions.length,
-      },
+      output: result, // API で返した内容をそのままログに残す（mode + structure）
       duration,
       openai: {
         model: 'gpt-4o-mini',
